@@ -45,17 +45,19 @@ falls behind and never gives it back. The slot always holds the newest frame
 and silently drops what could not be kept up with — the same intent as
 `cv2.CAP_PROP_BUFFERSIZE = 1`, made explicit.
 
-| File | Role |
-| --- | --- |
-| `hub/ingest.py` | Demux, decode, pace, distribute to slots |
-| `hub/detect.py` | YOLOv8 `track(persist=True)`, or the dependency-free mock |
-| `hub/state.py` | `WorldState` — one lock, one writer per field |
-| `hub/safety.py` | Watchdogs and mode arbitration |
-| `hub/vehicle.py` | WebSocket to the Pi, fixed-rate command tick |
-| `hub/vr.py` | Signaling, video track, bidirectional data channel |
-| `client/index.html` | Browser operator console — stands in for the APK |
-| `tools/fake_pi.py` | Vehicle simulator running the doc's control laws |
-| `tools/make_test_clip.py` | Generates a clip with two trackable targets |
+| File                      | Role                                                        |
+| ------------------------- | ----------------------------------------------------------- |
+| `hub/ingest.py`           | Demux, decode, pace, distribute to slots                    |
+| `hub/detect.py`           | YOLOv8 `track(persist=True)`, or the dependency-free mock   |
+| `hub/state.py`            | `WorldState` — one lock, one writer per field               |
+| `hub/safety.py`           | Watchdogs and mode arbitration                              |
+| `hub/vehicle.py`          | WebSocket to the Pi, fixed-rate command tick                |
+| `hub/vr.py`               | Signaling, video track, bidirectional data channel          |
+| `client/index.html`       | Browser operator console — stands in for the APK            |
+| `tools/fake_pi.py`        | Vehicle simulator running the doc's control laws            |
+| `tools/make_test_clip.py` | Generates a clip with two trackable targets                 |
+| `unity/`                  | Headset APK scripts — third client of the same data channel |
+| `docs/PROTOCOL.md`        | The `link` wire format all three clients depend on          |
 
 ## Three deliberate departures from the design doc
 
@@ -105,13 +107,31 @@ are chasing the last 20 ms of the 150 ms budget; not worth doing first.
 python tests/test_safety.py      # supervisor rules — the layer you cannot bench-test
 python tests/test_pipeline.py    # ingest -> detect -> state, no network
 python tests/test_e2e.py         # needs fake_pi + hub running; headless operator
+python tests/test_protocol.py    # wire format vs. the Unity DTOs
 ```
+
+`test_protocol.py` exists because C# is not compiled by CI here and
+`JsonUtility` fails silently: a renamed key becomes 0 or "" in the headset
+with no error anywhere. Run it after touching the payload in `hub/vr.py`.
 
 `test_e2e.py` negotiates a real WebRTC session, selects a target, requests
 follow, then stops sending heartbeats and asserts the vehicle is commanded to
 stop within the watchdog window.
 
 Simulate a WiFi blackout with `python tools/fake_pi.py --drop-after 20`.
+
+## The headset
+
+`unity/` holds the APK scripts. They speak the same data channel as the
+browser console, so the hub has one operator interface, not two. See
+[`unity/README.md`](unity/README.md) for scene setup and
+[`docs/PROTOCOL.md`](docs/PROTOCOL.md) for the wire format.
+
+The overlay does not depend on Unity's camera FOV. The video plane and the
+detection boxes are sized from a single `sensorHFovDeg` constant and share a
+parent transform, so alignment is a 2D mapping that cannot drift — which
+removes the doc's "match Unity camera FOV to OAK-D FOV exactly" failure mode
+rather than documenting it.
 
 ## Detection backends
 
