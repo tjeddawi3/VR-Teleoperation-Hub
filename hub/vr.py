@@ -164,6 +164,9 @@ class VRServer:
 
         if kind == "select":
             track_id = msg.get("id")
+            # -1 clears, same as null: the headset has no null to send.
+            if track_id is None or int(track_id) < 0:
+                track_id = None
             self.state.select(int(track_id) if track_id is not None else None)
             log.info("operator selected target %s", track_id)
             return
@@ -187,17 +190,20 @@ class VRServer:
                     "type": "world",
                     "t": round(time.time(), 3),
                     "frame_id": snap.frame_id,
-                    "frame_size": list(snap.frame_size),
+                    "frame_w": snap.frame_size[0],
+                    "frame_h": snap.frame_size[1],
                     "mode": snap.mode,
-                    "selected_id": snap.selected_id,
+                    # -1, never null: JsonUtility parses null as 0, which the
+                    # headset would render as a lock on track 0. See PROTOCOL.md.
+                    "selected_id": snap.selected_id if snap.selected_id is not None else -1,
                     "detections": [t.as_dict() for t in snap.tracks],
                     "gps": snap.gps,
                     "link": {
                         "pi": snap.pi_connected,
-                        "pi_age": round(snap.pi_age, 2) if snap.pi_age < 1e6 else None,
+                        "pi_age": round(snap.pi_age, 2) if snap.pi_age < 1e6 else -1.0,
                         "detect_age": round(snap.detect_age, 3)
                         if snap.detect_age < 1e6
-                        else None,
+                        else -1.0,
                     },
                     "reason": self.state.safety_reason,
                 }

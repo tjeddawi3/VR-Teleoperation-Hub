@@ -235,7 +235,7 @@ overlay.addEventListener("click", (ev) => {
     }
   }
   selectedId = best ? best.id : null;
-  send({ type: "select", id: selectedId });
+  send({ type: "select", id: selectedId === null ? -1 : selectedId });
 });
 
 /* ---- telemetry ------------------------------------------------------- */
@@ -251,8 +251,10 @@ function setNode(id, cls, text) {
 
 function onWorld(w) {
   world = w; pushHistory(w);
-  if (w.frame_size && w.frame_size[0]) frameSize = w.frame_size;
-  if (w.selected_id !== selectedId) selectedId = w.selected_id;
+  if (w.frame_w) frameSize = [w.frame_w, w.frame_h];
+  // The wire uses -1 for "nothing selected"; locally that is null.
+  const sel = w.selected_id >= 0 ? w.selected_id : null;
+  if (sel !== selectedId) selectedId = sel;
 
   const mr = $("mode-readout");
   mr.textContent = w.mode;
@@ -264,7 +266,7 @@ function onWorld(w) {
   }
 
   setNode("n-op", "ok", "connected");
-  setNode("n-hub", "ok", `f${w.frame_id} · ${w.link.detect_age !== null ? (w.link.detect_age * 1000).toFixed(0) + "ms" : "—"}`);
+  setNode("n-hub", "ok", `f${w.frame_id} · ${w.link.detect_age >= 0 ? (w.link.detect_age * 1000).toFixed(0) + "ms" : "—"}`);
   setNode("n-veh", w.link.pi ? "ok" : "bad", w.link.pi ? "linked" : "no link");
   const fix = w.gps.fix | 0;
   const fixName = { 0: "no fix", 1: "gps", 2: "sbas", 4: "rtk fixed", 5: "rtk float" }[fix] || String(fix);

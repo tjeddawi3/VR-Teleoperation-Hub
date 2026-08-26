@@ -9,7 +9,7 @@ namespace Teleop
     ///
     /// Nothing here is nullable. The hub sends -1 for absent values because
     /// JsonUtility parses null as 0, which would make track ID 0 look
-    /// permanently selected. See docs/PROTOCOL.md.
+    /// permanently selected. See PROTOCOL.md.
     ///
     /// tests/test_protocol.py asserts a live payload matches these types.
     /// If you add a field here, add it there too.
