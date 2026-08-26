@@ -1,0 +1,10 @@
+# Core hub
+aiohttp>=3.9
+aiortc>=1.9
+av>=12.0
+numpy>=1.24
+websockets>=12.0
+
+# Detection (optional -- the hub falls back to a mock detector without these)
+# ultralytics>=8.2
+# torch>=2.2

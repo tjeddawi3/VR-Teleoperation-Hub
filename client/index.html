@@ -1,0 +1,337 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Teleop console</title>
+<style>
+  /* System fonts only: this console has to load on a vehicle LAN with no
+     route to the internet. */
+  :root {
+    --ground:   #10151c;
+    --panel:    #171e27;
+    --rule:     #263140;
+    --text:     #c8d3e0;
+    --dim:      #6b7a8c;
+    --select:   #4fd1e0;  /* the chosen target */
+    --armed:    #f2a33c;  /* vehicle able to move */
+    --halt:     #e05c5c;  /* stopped, or a link is dead */
+    --live:     #7fc98a;  /* link healthy */
+  }
+  * { box-sizing: border-box; }
+  html, body {
+    margin: 0; height: 100%;
+    background: var(--ground); color: var(--text);
+    font: 400 14px/1.45 ui-sans-serif, system-ui, "Segoe UI", Roboto, sans-serif;
+  }
+  body { display: grid; grid-template-rows: auto 1fr auto; }
+
+  /* ---- authority strip -------------------------------------------------
+     The chain of custody for a motion command: operator -> hub -> vehicle.
+     Any broken link means the vehicle must not move, so the strip is the
+     first thing on the page and the only place using the status colours. */
+  .chain {
+    display: flex; align-items: center; gap: 0;
+    border-bottom: 1px solid var(--rule); background: var(--panel);
+    padding: 10px 16px; flex-wrap: wrap;
+  }
+  .node {
+    display: flex; align-items: baseline; gap: 8px;
+    padding: 4px 14px 4px 0;
+  }
+  .node .name {
+    font: 600 11px/1 ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+    letter-spacing: .14em; text-transform: uppercase; color: var(--dim);
+  }
+  .node .val {
+    font: 400 13px/1 ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+    color: var(--dim);
+  }
+  .node.ok .val { color: var(--live); }
+  .node.bad .val { color: var(--halt); }
+  .link { width: 26px; height: 1px; background: var(--rule); margin-right: 14px; }
+  .link.ok { background: var(--live); }
+  .link.bad { background: var(--halt); }
+  .spacer { flex: 1; }
+  .mode-readout {
+    font: 600 13px/1 ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+    letter-spacing: .1em; text-transform: uppercase;
+    padding: 6px 12px; border: 1px solid currentColor; border-radius: 2px;
+  }
+  .mode-readout.armed { color: var(--armed); }
+  .mode-readout.halt  { color: var(--halt); }
+
+  /* ---- viewport --------------------------------------------------- */
+  .stage { position: relative; overflow: hidden; background: #000; }
+  video, canvas.overlay {
+    position: absolute; inset: 0; width: 100%; height: 100%;
+  }
+  video { object-fit: contain; }
+  canvas.overlay { cursor: crosshair; }
+  .reason {
+    position: absolute; left: 16px; bottom: 16px;
+    font: 400 13px/1.3 ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+    color: var(--halt); background: rgba(16,21,28,.86);
+    border-left: 2px solid var(--halt); padding: 8px 12px; max-width: 60ch;
+  }
+  .reason:empty { display: none; }
+
+  /* ---- controls ---------------------------------------------------- */
+  .controls {
+    display: flex; align-items: center; gap: 20px; flex-wrap: wrap;
+    border-top: 1px solid var(--rule); background: var(--panel); padding: 12px 16px;
+  }
+  button {
+    font: 600 12px/1 ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+    letter-spacing: .1em; text-transform: uppercase;
+    background: transparent; color: var(--text);
+    border: 1px solid var(--rule); border-radius: 2px;
+    padding: 9px 16px; cursor: pointer;
+  }
+  button:hover:not(:disabled) { border-color: var(--dim); }
+  button:focus-visible { outline: 2px solid var(--select); outline-offset: 2px; }
+  button[aria-pressed="true"] { border-color: var(--armed); color: var(--armed); }
+  button.halt { border-color: var(--halt); color: var(--halt); }
+  button:disabled { opacity: .35; cursor: not-allowed; }
+  .hint { color: var(--dim); font-size: 12px; }
+  label.delay {
+    display: flex; align-items: center; gap: 8px;
+    font: 400 12px/1 ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+    color: var(--dim);
+  }
+  input[type=range] { width: 120px; accent-color: var(--select); }
+  @media (prefers-reduced-motion: reduce) { * { transition: none !important; } }
+</style>
+</head>
+<body>
+
+<div class="chain">
+  <div class="node" id="n-op"><span class="name">Operator</span><span class="val">—</span></div>
+  <div class="link" id="l-1"></div>
+  <div class="node" id="n-hub"><span class="name">Hub</span><span class="val">—</span></div>
+  <div class="link" id="l-2"></div>
+  <div class="node" id="n-veh"><span class="name">Vehicle</span><span class="val">—</span></div>
+  <div class="link" id="l-3"></div>
+  <div class="node" id="n-gps"><span class="name">GPS</span><span class="val">—</span></div>
+  <div class="spacer"></div>
+  <div class="mode-readout halt" id="mode-readout">stop</div>
+</div>
+
+<div class="stage">
+  <video id="video" autoplay playsinline muted></video>
+  <canvas class="overlay" id="overlay"></canvas>
+  <div class="reason" id="reason"></div>
+</div>
+
+<div class="controls">
+  <button id="connect">Connect</button>
+  <button id="m-manual" data-mode="manual" aria-pressed="false" disabled>Manual</button>
+  <button id="m-follow" data-mode="follow" aria-pressed="false" disabled>Follow</button>
+  <button id="m-avoid"  data-mode="avoid"  aria-pressed="false" disabled>Avoid</button>
+  <button id="m-stop" class="halt" data-mode="stop" disabled>Stop</button>
+  <label class="delay">
+    Overlay lag
+    <input type="range" id="delay" min="0" max="8" value="2" step="1">
+    <span id="delay-val">2</span> frames
+  </label>
+  <span class="hint">Click a box to select a target. Space = stop.</span>
+</div>
+
+<script>
+const $ = (id) => document.getElementById(id);
+const video = $("video"), overlay = $("overlay"), ctx = overlay.getContext("2d");
+
+let pc = null, link = null;
+let world = null;            // newest telemetry
+let history = [];            // recent detection sets, for lag compensation
+let frameSize = [1280, 720];
+let selectedId = null;
+
+/* Detections finish 15-25 ms after the frame they describe, but that frame is
+   already on its way to the display. Painting the newest boxes on the newest
+   video makes them trail moving objects. We keep a short history and draw an
+   older set, offset by however many frames the video pipeline is behind.
+   Slide "Overlay lag" until the boxes sit still on the target -- that number
+   is your measured pipeline depth, and it is what the Unity APK should use. */
+function pushHistory(w) {
+  history.push(w);
+  if (history.length > 12) history.shift();
+}
+function overlaySet() {
+  const lag = parseInt($("delay").value, 10);
+  return history[Math.max(0, history.length - 1 - lag)] || world;
+}
+
+/* ---- render ---------------------------------------------------------- */
+function videoRect() {
+  // object-fit: contain -- find where the frame actually sits in the element.
+  const ew = overlay.clientWidth, eh = overlay.clientHeight;
+  const [vw, vh] = frameSize;
+  const scale = Math.min(ew / vw, eh / vh);
+  const w = vw * scale, h = vh * scale;
+  return { x: (ew - w) / 2, y: (eh - h) / 2, w, h, scale };
+}
+
+function draw() {
+  const dpr = window.devicePixelRatio || 1;
+  if (overlay.width !== overlay.clientWidth * dpr) {
+    overlay.width = overlay.clientWidth * dpr;
+    overlay.height = overlay.clientHeight * dpr;
+  }
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  ctx.clearRect(0, 0, overlay.clientWidth, overlay.clientHeight);
+
+  const w = overlaySet();
+  if (w) {
+    const r = videoRect();
+    ctx.lineWidth = 1.5;
+    ctx.font = "600 12px ui-monospace, SF Mono, Menlo, Consolas, monospace";
+    for (const d of w.detections) {
+      const [x1, y1, x2, y2] = d.bbox;
+      const px = r.x + x1 * r.scale, py = r.y + y1 * r.scale;
+      const pw = (x2 - x1) * r.scale, ph = (y2 - y1) * r.scale;
+      const chosen = d.id === selectedId;
+
+      ctx.strokeStyle = chosen ? "#4fd1e0" : "rgba(200,211,224,.45)";
+      ctx.lineWidth = chosen ? 2.5 : 1.5;
+      ctx.strokeRect(px, py, pw, ph);
+
+      // Corner ticks on the selected target: reads as a lock, not a label.
+      if (chosen) {
+        const t = Math.min(18, pw / 4, ph / 4);
+        ctx.beginPath();
+        for (const [cx, cy, dx, dy] of [[px,py,1,1],[px+pw,py,-1,1],[px,py+ph,1,-1],[px+pw,py+ph,-1,-1]]) {
+          ctx.moveTo(cx + dx * t, cy); ctx.lineTo(cx, cy); ctx.lineTo(cx, cy + dy * t);
+        }
+        ctx.stroke();
+      }
+
+      const label = `${d.label} #${d.id} ${(d.conf * 100) | 0}%`;
+      ctx.fillStyle = chosen ? "#4fd1e0" : "rgba(200,211,224,.55)";
+      ctx.fillText(label, px, Math.max(12, py - 6));
+    }
+  }
+  requestAnimationFrame(draw);
+}
+requestAnimationFrame(draw);
+
+/* ---- selection ------------------------------------------------------- */
+overlay.addEventListener("click", (ev) => {
+  const w = overlaySet();
+  if (!w || !link || link.readyState !== "open") return;
+  const r = videoRect();
+  const rect = overlay.getBoundingClientRect();
+  const fx = (ev.clientX - rect.left - r.x) / r.scale;
+  const fy = (ev.clientY - rect.top - r.y) / r.scale;
+
+  // Smallest box containing the click wins -- picking a person standing in
+  // front of a car should not select the car.
+  let best = null, bestArea = Infinity;
+  for (const d of w.detections) {
+    const [x1, y1, x2, y2] = d.bbox;
+    if (fx >= x1 && fx <= x2 && fy >= y1 && fy <= y2) {
+      const area = (x2 - x1) * (y2 - y1);
+      if (area < bestArea) { best = d; bestArea = area; }
+    }
+  }
+  selectedId = best ? best.id : null;
+  send({ type: "select", id: selectedId });
+});
+
+/* ---- telemetry ------------------------------------------------------- */
+function ageClass(v, limit) {
+  if (v === null || v === undefined) return "bad";
+  return v <= limit ? "ok" : "bad";
+}
+function setNode(id, cls, text) {
+  const n = $(id);
+  n.className = "node " + cls;
+  n.querySelector(".val").textContent = text;
+}
+
+function onWorld(w) {
+  world = w; pushHistory(w);
+  if (w.frame_size && w.frame_size[0]) frameSize = w.frame_size;
+  if (w.selected_id !== selectedId) selectedId = w.selected_id;
+
+  const mr = $("mode-readout");
+  mr.textContent = w.mode;
+  mr.className = "mode-readout " + (w.mode === "stop" ? "halt" : "armed");
+  $("reason").textContent = w.reason || "";
+
+  for (const b of document.querySelectorAll("[data-mode]")) {
+    b.setAttribute("aria-pressed", String(b.dataset.mode === w.mode));
+  }
+
+  setNode("n-op", "ok", "connected");
+  setNode("n-hub", "ok", `f${w.frame_id} · ${w.link.detect_age !== null ? (w.link.detect_age * 1000).toFixed(0) + "ms" : "—"}`);
+  setNode("n-veh", w.link.pi ? "ok" : "bad", w.link.pi ? "linked" : "no link");
+  const fix = w.gps.fix | 0;
+  const fixName = { 0: "no fix", 1: "gps", 2: "sbas", 4: "rtk fixed", 5: "rtk float" }[fix] || String(fix);
+  setNode("n-gps", fix >= 2 ? "ok" : "bad", fixName);
+
+  $("l-1").className = "link ok";
+  $("l-2").className = "link " + (w.link.pi ? "ok" : "bad");
+  $("l-3").className = "link " + (fix >= 2 ? "ok" : "bad");
+}
+
+/* ---- transport ------------------------------------------------------- */
+function send(obj) {
+  if (link && link.readyState === "open") link.send(JSON.stringify(obj));
+}
+
+async function connect() {
+  $("connect").disabled = true;
+  $("connect").textContent = "Connecting…";
+
+  pc = new RTCPeerConnection({ iceServers: [{ urls: "stun:stun.l.google.com:19302" }] });
+  pc.addTransceiver("video", { direction: "recvonly" });
+  pc.ontrack = (ev) => { video.srcObject = ev.streams[0]; };
+
+  link = pc.createDataChannel("link", { ordered: true });
+  link.onopen = () => {
+    $("connect").textContent = "Connected";
+    for (const b of document.querySelectorAll("[data-mode]")) b.disabled = false;
+    // Heartbeat at 5 Hz. Three missed beats trips the hub's 500 ms operator
+    // watchdog, which commands stop.
+    setInterval(() => send({ type: "heartbeat" }), 200);
+  };
+  link.onmessage = (ev) => {
+    const msg = JSON.parse(ev.data);
+    if (msg.type === "world") onWorld(msg);
+  };
+  link.onclose = () => {
+    $("connect").textContent = "Reconnect";
+    $("connect").disabled = false;
+    for (const b of document.querySelectorAll("[data-mode]")) b.disabled = true;
+  };
+
+  const offer = await pc.createOffer();
+  await pc.setLocalDescription(offer);
+  await new Promise((res) => {
+    if (pc.iceGatheringState === "complete") return res();
+    pc.onicegatheringstatechange = () => pc.iceGatheringState === "complete" && res();
+  });
+
+  const resp = await fetch("/offer", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      sdp: pc.localDescription.sdp,
+      type: pc.localDescription.type,
+    }),
+  });
+  await pc.setRemoteDescription(await resp.json());
+}
+
+$("connect").onclick = connect;
+for (const b of document.querySelectorAll("[data-mode]")) {
+  b.onclick = () => send({ type: "mode", mode: b.dataset.mode });
+}
+$("delay").oninput = () => { $("delay-val").textContent = $("delay").value; };
+window.addEventListener("keydown", (e) => {
+  if (e.code === "Space") { e.preventDefault(); send({ type: "mode", mode: "stop" }); }
+});
+</script>
+</body>
+</html>
